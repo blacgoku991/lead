@@ -9,7 +9,7 @@ import re
 
 import aiohttp
 
-from ..config import CATEGORIES, refine_category
+from ..config import CATEGORIES, DEPARTEMENTS, refine_category
 from ..db import DB
 from ..utils import log
 
@@ -18,6 +18,10 @@ ENDPOINTS = (
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
 )
+
+
+# overpass-api.de répond 406 si on ne demande pas explicitement du JSON avec un User-Agent identifiable
+_HEADERS = {"Accept": "application/json, */*;q=0.5", "User-Agent": "AutoLead/1.0 (lead generation; python-aiohttp)"}
 
 
 def area_country(cc: str) -> str:
@@ -85,11 +89,11 @@ async def overpass(session: aiohttp.ClientSession, query: str, label: str) -> li
     for attempt in range(6):
         endpoint = ENDPOINTS[attempt % len(ENDPOINTS)]
         try:
-            async with session.post(endpoint, data={"data": query},
+            async with session.post(endpoint, data={"data": query}, headers=_HEADERS,
                                     timeout=aiohttp.ClientTimeout(total=1000)) as r:
                 if r.status == 200:
                     data = await r.json(content_type=None)
-                    if "runtime error" in (data.get("remark") or ""):
+                    if "error" in (data.get("remark") or "").lower():
                         log(f"[osm] {label} : {data['remark'][:120]} (nouvel essai)")
                     else:
                         return data.get("elements", [])
@@ -110,7 +114,9 @@ async def collect_osm(db: DB, session: aiohttp.ClientSession, categories: list[s
     all_selectors = list(index)
     if custom_area:
         jobs = [(area_custom(custom_area), all_selectors, custom_area)]
-    elif departements:
+    elif departements or country.upper() == "FR":
+        # par département : requêtes petites et fiables (une requête France entière expire ou est tronquée)
+        departements = departements or list(DEPARTEMENTS)
         jobs = [(area_departement(d), all_selectors, f"département {d}") for d in departements]
     else:  # pays entier : une requête par catégorie pour garder des réponses raisonnables
         jobs = [(area_country(country), [tuple(s) for s in CATEGORIES[c]["osm"]], f"{country} / {c}")
