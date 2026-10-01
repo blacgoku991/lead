@@ -13,15 +13,16 @@ from ..config import CATEGORIES, DEPARTEMENTS, refine_category
 from ..db import DB
 from ..utils import log
 
-ENDPOINTS = (
-    "https://overpass-api.de/api/interpreter",
+ENDPOINTS = [
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
-)
+    "https://overpass-api.de/api/interpreter",
+]
 
 
 # overpass-api.de répond 406 si on ne demande pas explicitement du JSON avec un User-Agent identifiable
-_HEADERS = {"Accept": "application/json, */*;q=0.5", "User-Agent": "AutoLead/1.0 (lead generation; python-aiohttp)"}
+_HEADERS = {"Accept": "application/json, */*;q=0.5",
+            "User-Agent": "AutoLead/1.0 (+https://github.com/blacgoku991/lead)"}
 
 
 def area_country(cc: str) -> str:
@@ -97,6 +98,12 @@ async def overpass(session: aiohttp.ClientSession, query: str, label: str) -> li
                         log(f"[osm] {label} : {data['remark'][:120]} (nouvel essai)")
                     else:
                         return data.get("elements", [])
+                elif r.status in (403, 406) and len(ENDPOINTS) > 1:
+                    # serveur qui refuse ce client : on l'écarte pour toute la suite de la collecte
+                    if endpoint in ENDPOINTS:
+                        ENDPOINTS.remove(endpoint)
+                        log(f"[osm] {endpoint} refuse les requêtes (HTTP {r.status}) : serveur écarté")
+                    continue
                 else:
                     log(f"[osm] {label} : HTTP {r.status} sur {endpoint} (nouvel essai)")
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
