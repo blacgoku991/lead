@@ -119,6 +119,8 @@ async def collect(db: DB, args) -> None:
 
 
 async def crawl(db: DB, args) -> None:
+    if args.recrawl_no_email:
+        log(f"[crawl] {db.reset_sites_without_email()} sites sans e-mail remis en file")
     if args.retry_failed:
         log(f"[crawl] {db.reset_failed_sites()} sites en échec remis en file")
     await run_crawl(db, concurrency=args.concurrency, max_pages=args.max_pages, timeout=args.timeout,
@@ -175,11 +177,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_crawl = argparse.ArgumentParser(add_help=False)
     g = p_crawl.add_argument_group("crawl")
     g.add_argument("--concurrency", type=int, default=150, help="sites visités en parallèle [150]")
-    g.add_argument("--max-pages", type=int, default=6, help="pages max par site [6]")
+    g.add_argument("--max-pages", type=int, default=10, help="pages max par site [10]")
     g.add_argument("--timeout", type=float, default=15.0, help="timeout par page en s [15]")
     g.add_argument("--site-timeout", type=float, default=60.0, help="temps max par site en s [60]")
     g.add_argument("--limit", type=int, help="ne traiter que N sites (test)")
     g.add_argument("--retry-failed", action="store_true", help="re-tenter les sites injoignables")
+    g.add_argument("--recrawl-no-email", action="store_true",
+                   help="revisiter les sites déjà crawlés où aucun e-mail n'a été trouvé")
 
     p_dns = argparse.ArgumentParser(add_help=False)
     p_dns.add_argument("--dns-concurrency", type=int, default=300, help="requêtes DNS simultanées [300]")

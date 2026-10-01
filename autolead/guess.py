@@ -39,12 +39,30 @@ def _words(name: str) -> list[str]:
     return [w for w in re.findall(r"[a-z0-9]+", s) if w not in LEGAL_FORMS]
 
 
-def candidate_domains(name: str, tlds=("fr", "com")) -> list[str]:
+def candidate_domains(name: str, city: str = "", tlds=("fr", "com")) -> list[str]:
+    """Variantes de domaine : nom complet, nom + ville, nom sans mot générique (+ auto / garage)."""
     words = _words(name)
     if not words or len(words) > 5 or all(w in GENERIC for w in words):
         return []
-    bases = {"".join(words), "-".join(words)}
-    return [f"{b}.{t}" for b in sorted(bases) if 4 <= len(b) <= 63 for t in tlds]
+    bases: set[str] = set()
+
+    def add(ws: list[str]) -> None:
+        bases.update({"".join(ws), "-".join(ws)})
+
+    add(words)
+    main = set(bases)
+    city_words = _words(city)[:3]
+    if city_words and city_words[-len(city_words):] != words[-len(city_words):]:
+        add(words + city_words)                      # garage-dupont-lyon
+    core = [w for w in words if w not in GENERIC]
+    if core and core != words and len("".join(core)) >= 5:
+        add(core)                                     # dupont
+        add(core + ["auto"])                          # dupont-auto
+        if words[0] != "garage":
+            add(["garage"] + core)                    # garage-dupont
+    out = [f"{b}.{t}" for b in sorted(bases) if 4 <= len(b) <= 63 for t in tlds]
+    out += [f"{b}.net" for b in sorted(main) if 4 <= len(b) <= 63]
+    return out
 
 
 def business_tokens(postal_code: str | None, siren: str | None) -> list[str]:
@@ -91,7 +109,8 @@ async def run_guess(db: DB, *, dns_concurrency: int = 300, limit: int | None = N
         tokens = business_tokens(r["postal_code"], r["siren"])
         if not tokens:
             continue
-        for d in set(candidate_domains(r["name"])) | set(candidate_domains(r["alt_name"] or "")):
+        city = r["city"] or ""
+        for d in set(candidate_domains(r["name"], city)) | set(candidate_domains(r["alt_name"] or "", city)):
             if d not in skip:
                 candidates[d].append((r["id"], tokens))
     if not candidates:

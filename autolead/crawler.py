@@ -64,7 +64,7 @@ def _norm(url: str) -> str:
 
 
 class Crawler:
-    def __init__(self, session: aiohttp.ClientSession, *, max_pages: int = 6, max_bytes: int = 1_500_000,
+    def __init__(self, session: aiohttp.ClientSession, *, max_pages: int = 10, max_bytes: int = 1_500_000,
                  user_agent: str = DEFAULT_UA, per_site_parallel: int = 3, respect_robots: bool = True):
         self.session = session
         self.max_pages = max_pages
@@ -88,7 +88,14 @@ class Crawler:
 
         seen = {_norm(home.url), _norm(url)}
         links = [u for u in discover_links(home.text, home.url) if _norm(u) not in seen]
-        await self._fetch_batch(links[: self.max_pages - 1], res, seen, robots, keep_text)
+        pages = await self._fetch_batch(links[: self.max_pages - 1], res, seen, robots, keep_text)
+
+        # 2e niveau : liens contact / mentions trouvés sur les pages déjà visitées
+        if res.pages < self.max_pages:
+            more: list[str] = []
+            for p in pages:
+                more += [u for u in discover_links(p.text, p.url) if _norm(u) not in seen and u not in more]
+            await self._fetch_batch(more[: self.max_pages - res.pages], res, seen, robots, keep_text)
 
         if not res.emails and res.pages < self.max_pages:
             extra = [urljoin(home.url, p) for p in FALLBACK_PATHS]
@@ -109,20 +116,23 @@ class Crawler:
             out.append(f"{p.scheme}://{p.netloc}/")
         return out
 
-    async def _fetch_batch(self, urls, res, seen, robots, keep_text) -> None:
+    async def _fetch_batch(self, urls, res, seen, robots, keep_text) -> list[Page]:
         if not urls:
-            return
+            return []
         for u in urls:
             seen.add(_norm(u))
         sem = asyncio.Semaphore(self.per_site_parallel)
+        pages: list[Page] = []
 
         async def one(u: str) -> None:
             async with sem:
                 page = await self._fetch(u, robots)
             if page:
                 self._consume(page, res, keep_text)
+                pages.append(page)
 
         await asyncio.gather(*(one(u) for u in urls))
+        return pages
 
     def _consume(self, page: Page, res: CrawlResult, keep_text: bool) -> None:
         res.pages += 1
@@ -189,7 +199,7 @@ def verify_tokens(text: str, tokens: list[str]) -> bool:
     return False
 
 
-async def run_crawl(db: DB, *, concurrency: int = 150, max_pages: int = 6, timeout: float = 15.0,
+async def run_crawl(db: DB, *, concurrency: int = 150, max_pages: int = 10, timeout: float = 15.0,
                     site_timeout: float = 60.0, user_agent: str = DEFAULT_UA, limit: int | None = None,
                     trust_env: bool = True) -> None:
     sites = db.pending_sites(limit)

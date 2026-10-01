@@ -31,11 +31,15 @@ _MAILTO = re.compile(r"mailto:([^\"'<>\s]+)", re.I)
 _CF_ATTR = re.compile(r"data-cfemail=[\"']([0-9a-fA-F]+)[\"']")
 _CF_HREF = re.compile(r"/cdn-cgi/l/email-protection#([0-9a-fA-F]+)")
 
-_AT = r"\s*[\[\(\{]\s*(?:at|arobase|@)\s*[\]\)\}]\s*"
-_DOT = r"(?:\s*[\[\(\{]\s*(?:dot|point|\.)\s*[\]\)\}]\s*|\.)"
-_OBF_HINT = re.compile(r"[\[\(\{]\s*(?:at|arobase|@)\s*[\]\)\}]", re.I)
+_AT = r"(?:\s*[\[\(\{]\s*(?:at|arobase|@)\s*[\]\)\}]\s*|\s+arobase\s+)"
+_DOT = r"(?:\s*[\[\(\{]\s*(?:dot|point|\.)\s*[\]\)\}]\s*|\s+point\s+|\.)"
+_OBF_HINT = re.compile(r"[\[\(\{]\s*(?:at|arobase|@)\s*[\]\)\}]|\barobase\b", re.I)
 _OBF = re.compile(rf"(?<![a-z0-9._%+-])([a-z0-9][a-z0-9._%+-]{{0,63}}){_AT}([a-z0-9-]+(?:{_DOT}[a-z0-9-]+)+)", re.I)
-_DOT_SUB = re.compile(r"\s*[\[\(\{]\s*(?:dot|point|\.)\s*[\]\)\}]\s*", re.I)
+_DOT_SUB = re.compile(r"\s*[\[\(\{]\s*(?:dot|point|\.)\s*[\]\)\}]\s*|\s+point\s+", re.I)
+_JS_CONCAT = re.compile(r"""(['"])\s*\+\s*\1""")  # 'contact' + '@' + 'garage.fr'
+_DATA_ATTRS = re.compile(
+    r"""data-(?:user|name|mail-?user|local)=["']([a-z0-9._%+-]+)["'][^>]{0,200}?"""
+    r"""data-(?:domain|host|mail-?domain)=["']([a-z0-9.-]+\.[a-z]{2,24})["']""", re.I)
 
 _A_OPEN = re.compile(r"<a\b([^>]*)>", re.I)
 _HREF = re.compile(r"""href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.I)
@@ -108,6 +112,11 @@ def extract_emails(text: str) -> set[str]:
     if "&" in text:
         text = html.unescape(text)
 
+    if "+" in text:
+        text = _JS_CONCAT.sub("", text)
+    for local, dom in _DATA_ATTRS.findall(text):
+        candidates.append(f"{local}@{dom}")
+
     for m in _MAILTO.findall(text):
         target = unquote(m).split("?", 1)[0]
         candidates.extend(target.split(","))
@@ -115,9 +124,10 @@ def extract_emails(text: str) -> set[str]:
     # Balayage à partir de chaque "@" (bien plus rapide qu'une regex sur toute la page)
     i = text.find("@")
     while i != -1:
-        lm = _LOCAL_TAIL.search(text, max(0, i - 64), i)
+        j = i - 1 if i > 0 and text[i - 1] == " " else i      # tolère "contact @ garage.fr"
+        lm = _LOCAL_TAIL.search(text, max(0, j - 64), j)
         if lm:
-            dm = _DOMAIN_HEAD.match(text, i + 1)
+            dm = _DOMAIN_HEAD.match(text, i + 2 if text[i + 1:i + 2] == " " else i + 1)
             if dm:
                 candidates.append(f"{lm.group()}@{dm.group()}")
         i = text.find("@", i + 1)

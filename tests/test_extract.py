@@ -39,6 +39,14 @@ class ExtractTests(unittest.TestCase):
                   noreply@garage.fr user@example.com"""
         self.assertEqual(extract_emails(html), set())
 
+    def test_more_obfuscations(self):
+        html = """<script>var e = 'contact' + '@' + 'garage-roux.fr';</script>
+                  Mail : atelier @ garage-roux.fr<br>devis arobase garage-roux point fr
+                  <a class="eml" data-user="vente" data-domain="garage-roux.fr">écrire</a>
+                  @media screen { body {} }"""
+        self.assertEqual(extract_emails(html), {"contact@garage-roux.fr", "atelier@garage-roux.fr",
+                                                "devis@garage-roux.fr", "vente@garage-roux.fr"})
+
     def test_newline_before_at_is_not_glued(self):
         self.assertEqual(extract_emails("Contact\n@garage.fr"), set())
 
@@ -81,11 +89,13 @@ class DomainTests(unittest.TestCase):
                          "sites.google.com/view/garage-x")
 
     def test_candidate_domains(self):
-        self.assertEqual(set(candidate_domains("SARL GARAGE DUPONT (DUPONT JEAN)")),
-                         {"garage-dupont.com", "garage-dupont.fr", "garagedupont.com", "garagedupont.fr"})
+        doms = set(candidate_domains("SARL GARAGE DUPONT (DUPONT JEAN)", "Lyon"))
+        self.assertTrue({"garage-dupont.fr", "garagedupont.com", "garage-dupont.net", "garage-dupont-lyon.fr",
+                         "dupont-auto.fr", "dupont.fr"} <= doms)
+        self.assertNotIn("garage-garage-dupont.fr", doms)
         self.assertEqual(candidate_domains("GARAGE DU CENTRE"), [])
-        self.assertEqual(set(candidate_domains("Éts Rénov'Auto")),
-                         {"renov-auto.com", "renov-auto.fr", "renovauto.com", "renovauto.fr"})
+        self.assertTrue({"renov-auto.com", "renov-auto.fr", "renovauto.com", "renovauto.fr"}
+                        <= set(candidate_domains("Éts Rénov'Auto")))
 
     def test_verify_tokens(self):
         page = "Garage Dupont, 12 rue X, 69003 Lyon — SIREN 123 456 789"

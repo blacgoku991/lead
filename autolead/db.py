@@ -124,6 +124,14 @@ class DB:
             sql += f" LIMIT {int(limit)}"
         return self.conn.execute(sql).fetchall()
 
+    def reset_sites_without_email(self) -> int:
+        cur = self.conn.execute(
+            "UPDATE sites SET status='pending' WHERE status='ok' "
+            "AND site_key NOT IN (SELECT DISTINCT site_key FROM emails WHERE site_key != '')"
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     def reset_failed_sites(self) -> int:
         cur = self.conn.execute(
             "UPDATE sites SET status='pending' WHERE status IN ('unreachable','timeout','error')"
@@ -160,7 +168,7 @@ class DB:
 
     def businesses_for_guess(self, limit: int | None = None) -> list[sqlite3.Row]:
         sql = (
-            "SELECT id, name, alt_name, postal_code, siren FROM businesses b "
+            "SELECT id, name, alt_name, postal_code, siren, city FROM businesses b "
             "WHERE site_key IS NULL "
             "AND NOT EXISTS (SELECT 1 FROM emails e WHERE e.business_id=b.id)"
         )
