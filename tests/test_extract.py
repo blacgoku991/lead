@@ -2,7 +2,7 @@ import unittest
 
 from autolead.config import refine_category
 from autolead.crawler import verify_tokens
-from autolead.extract import clean_email, discover_links, email_kind, extract_emails, is_role
+from autolead.extract import clean_email, discover_external_sites, discover_links, email_kind, extract_emails, is_role
 from autolead.guess import candidate_domains
 from autolead.sources.gmaps import place_to_business
 from autolead.sources.osm import element_to_business, selector_index
@@ -72,6 +72,16 @@ class ExtractTests(unittest.TestCase):
         links = discover_links(html, "https://garage.fr/")
         self.assertEqual(links, ["https://garage.fr/contactez-nous", "https://www.garage.fr/mentions-legales",
                                  "https://garage.fr/page-7"])
+
+
+    def test_discover_external_sites(self):
+        html = """<a href="https://carrosserie-voisine.fr/accueil">Notre partenaire carrosserie</a>
+                  <a href="https://www.pneus-express.com/">Pneus Express</a>
+                  <a href="https://www.facebook.com/garage">Facebook</a>
+                  <a href="https://boulangerie-martin.fr/">Boulangerie</a>
+                  <a href="https://garage.fr/contact">Contact</a>"""
+        self.assertEqual(discover_external_sites(html, "https://garage.fr/"),
+                         {"https://carrosserie-voisine.fr/", "https://www.pneus-express.com/"})
 
 
 class DomainTests(unittest.TestCase):

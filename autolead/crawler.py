@@ -15,7 +15,7 @@ from urllib.robotparser import RobotFileParser
 import aiohttp
 
 from .db import DB
-from .extract import discover_links, extract_emails
+from .extract import discover_external_sites, discover_links, extract_emails
 from .net import DEFAULT_UA, make_session
 from .utils import Progress, host_of, log, registrable
 
@@ -39,6 +39,7 @@ class CrawlResult:
     pages: int = 0
     emails: dict = field(default_factory=dict)  # e-mail -> URL de la page où il a été trouvé
     texts: list = field(default_factory=list)  # contenu des pages (vérification des domaines devinés)
+    partners: set = field(default_factory=set)  # sites auto externes cités (partenaires, réseau...)
 
 
 def _decode(body: bytes, charset: str | None) -> str:
@@ -65,13 +66,15 @@ def _norm(url: str) -> str:
 
 class Crawler:
     def __init__(self, session: aiohttp.ClientSession, *, max_pages: int = 10, max_bytes: int = 1_500_000,
-                 user_agent: str = DEFAULT_UA, per_site_parallel: int = 3, respect_robots: bool = True):
+                 user_agent: str = DEFAULT_UA, per_site_parallel: int = 3, respect_robots: bool = True,
+                 follow_partners: bool = True):
         self.session = session
         self.max_pages = max_pages
         self.max_bytes = max_bytes
         self.user_agent = user_agent
         self.per_site_parallel = per_site_parallel
         self.respect_robots = respect_robots
+        self.follow_partners = follow_partners
 
     async def crawl(self, url: str, res: CrawlResult, keep_text: bool = False) -> CrawlResult:
         robots: dict[str, RobotFileParser | None] = {}
@@ -140,6 +143,8 @@ class Crawler:
             res.emails.setdefault(email, page.url)
         if keep_text:
             res.texts.append(page.text[:400_000])
+        if self.follow_partners:
+            res.partners |= discover_external_sites(page.text, page.url)
 
     async def _fetch(self, url: str, robots: dict) -> Page | None:
         if not await self._allowed(url, robots):
@@ -201,15 +206,25 @@ def verify_tokens(text: str, tokens: list[str]) -> bool:
 
 async def run_crawl(db: DB, *, concurrency: int = 150, max_pages: int = 10, timeout: float = 15.0,
                     site_timeout: float = 60.0, user_agent: str = DEFAULT_UA, limit: int | None = None,
-                    trust_env: bool = True) -> None:
-    sites = db.pending_sites(limit)
-    if not sites:
-        log("[crawl] aucun site en attente.")
-        return
-    log(f"[crawl] {len(sites)} sites à visiter, {concurrency} en parallèle")
+                    trust_env: bool = True, follow_partners: bool = True, rounds: int = 3) -> None:
     # getaddrinfo tourne dans un pool de threads : on l'agrandit pour ne pas brider le DNS
     asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=min(256, concurrency + 16)))
+    # Chaque tour visite les sites en attente, dont les sites partenaires découverts au tour précédent
+    for n in range(1, (rounds if follow_partners and not limit else 1) + 1):
+        sites = db.pending_sites(limit)
+        if not sites:
+            if n == 1:
+                log("[crawl] aucun site en attente.")
+            return
+        label = "" if n == 1 else f" (tour {n} : sites partenaires découverts)"
+        log(f"[crawl] {len(sites)} sites à visiter{label}, {concurrency} en parallèle")
+        await _crawl_round(db, sites, concurrency=concurrency, max_pages=max_pages, timeout=timeout,
+                           site_timeout=site_timeout, user_agent=user_agent, trust_env=trust_env,
+                           follow_partners=follow_partners)
 
+
+async def _crawl_round(db: DB, sites, *, concurrency, max_pages, timeout, site_timeout, user_agent,
+                       trust_env, follow_partners) -> None:
     queue: asyncio.Queue = asyncio.Queue()
     for s in sites:
         queue.put_nowait(s)
@@ -218,7 +233,7 @@ async def run_crawl(db: DB, *, concurrency: int = 150, max_pages: int = 10, time
 
     async with make_session(concurrency=concurrency * 3, per_host=4, timeout=timeout,
                             user_agent=user_agent, trust_env=trust_env) as session:
-        crawler = Crawler(session, max_pages=max_pages, user_agent=user_agent)
+        crawler = Crawler(session, max_pages=max_pages, user_agent=user_agent, follow_partners=follow_partners)
 
         async def worker() -> None:
             nonlocal pending_commit
@@ -266,6 +281,13 @@ def _store(db: DB, site, res: CrawlResult, progress: Progress) -> None:
             status, emails = "unverified", {}
     site_domains = {registrable(host_of(site["url"])), registrable(host_of(res.final_url))} - {""}
     new = db.save_crawl(key, status, res.final_url, res.pages, emails, site_domains)
+    if status == "ok" and res.partners:
+        added = db.add_businesses([
+            {"source": "lien", "source_id": url, "name": host_of(url), "category": "partenaire",
+             "website": url} for url in res.partners
+        ])
+        if added:
+            progress.add("sites partenaires ajoutés", added)
     if new:
         progress.add("e-mails", new)
         progress.add("sites avec e-mail", 1)

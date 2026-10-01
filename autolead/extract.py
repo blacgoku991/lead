@@ -14,11 +14,20 @@ from .config import (
     BAD_EMAIL_TLDS,
     BAD_LOCAL_PARTS,
     BAD_LOCAL_RE,
+    BLOCKED_SITE_DOMAINS,
     FREE_EMAIL_DOMAINS,
     PLACEHOLDER_DOMAIN_RE,
     ROLE_LOCAL_PARTS,
 )
 from .utils import domain_in, registrable
+
+# Un lien externe n'est suivi que s'il sent l'entreprise automobile (ancre ou contexte)
+_AUTO_LINK = re.compile(
+    r"garage|carross|automobile|\bauto\b|m[ée]canique|pneu|pare[- ]?brise|concession|"
+    r"partenaire|r[ée]seau|nos agences|nos sites|voir le site|site officiel|"
+    r"d[ée]pannage|remorquage|contr[ôo]le technique|moto\b|utilitaire|poids lourds",
+    re.I,
+)
 
 _LOCAL_TAIL = re.compile(r"[a-z0-9._%+-]{1,64}\Z", re.I)
 _DOMAIN_HEAD = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?![a-z0-9-])", re.I)
@@ -191,3 +200,32 @@ def discover_links(page_html: str, base_url: str, limit: int = 12) -> list[str]:
             scores[clean] = max(scores.get(clean, 0), score)
     ranked = sorted(scores.items(), key=lambda kv: -kv[1])
     return [u for u, _ in ranked[:limit]]
+
+
+def discover_external_sites(page_html: str, base_url: str, limit: int = 30) -> set[str]:
+    """Domaines externes d'autres entreprises auto (partenaires, réseau, groupe) cités sur la page."""
+    base_reg = registrable(urlsplit(base_url).hostname or "")
+    found: set[str] = set()
+    for n, m in enumerate(_A_OPEN.finditer(page_html[:MAX_SCAN])):
+        if n > 3000 or len(found) >= limit:
+            break
+        hm = _HREF.search(m.group(1))
+        if not hm:
+            continue
+        href = html.unescape(next(g for g in hm.groups() if g is not None)).strip()
+        if not href.startswith(("http://", "https://")):
+            continue
+        try:
+            p = urlsplit(urljoin(base_url, href))
+        except ValueError:
+            continue
+        host = (p.hostname or "").lower()
+        reg = registrable(host)
+        if not reg or reg == base_reg or domain_in(host, BLOCKED_SITE_DOMAINS) or _SKIP_EXT.search(p.path):
+            continue
+        tail = page_html[m.end():m.end() + 300]
+        close = tail.lower().find("</a")
+        anchor = html.unescape(_TAGS.sub(" ", tail[:close] if close >= 0 else tail))
+        if _AUTO_LINK.search(f"{anchor} {reg}"):
+            found.add(f"{p.scheme}://{p.netloc}/")
+    return found

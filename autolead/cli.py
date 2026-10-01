@@ -124,7 +124,8 @@ async def crawl(db: DB, args) -> None:
     if args.retry_failed:
         log(f"[crawl] {db.reset_failed_sites()} sites en échec remis en file")
     await run_crawl(db, concurrency=args.concurrency, max_pages=args.max_pages, timeout=args.timeout,
-                    site_timeout=args.site_timeout, user_agent=args.user_agent, limit=args.limit)
+                    site_timeout=args.site_timeout, user_agent=args.user_agent, limit=args.limit,
+                    follow_partners=not args.no_partners)
 
 
 def export(db: DB, args) -> None:
@@ -182,6 +183,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--site-timeout", type=float, default=60.0, help="temps max par site en s [60]")
     g.add_argument("--limit", type=int, help="ne traiter que N sites (test)")
     g.add_argument("--retry-failed", action="store_true", help="re-tenter les sites injoignables")
+    g.add_argument("--no-partners", action="store_true",
+                   help="ne pas suivre les liens vers d'autres sites auto (partenaires, réseau...)")
     g.add_argument("--recrawl-no-email", action="store_true",
                    help="revisiter les sites déjà crawlés où aucun e-mail n'a été trouvé")
 
