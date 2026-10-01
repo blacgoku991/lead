@@ -11,6 +11,7 @@ casses/VHU, stations-service, camping-cars, équipementiers.
 1. collect   Sources des entreprises
              ├─ OpenStreetMap (Overpass) : lieux auto avec site web / e-mail / téléphone
              ├─ SIRENE (API recherche-entreprises.api.gouv.fr) : toutes les entreprises actives par code NAF
+             ├─ Google Maps via l'API officielle Google Places (optionnel, clé) : site, tél., adresse
              ├─ Brave Search API (optionnel, clé) : "garage automobile Lyon"... -> sites web
              └─ Vos fichiers (.txt / .csv de sites)
 2. guess     Pour les fiches SIRENE sans site : garage-dupont.fr, garagedupont.com...
@@ -44,6 +45,10 @@ python -m autolead run --depts 75,92,93,94 --pro-only -o idf.csv
 
 # Seulement garages et carrosseries
 python -m autolead run --categories garage,carrosserie,vitrage --depts 69
+
+# Ajouter Google Maps (API officielle Places : console.cloud.google.com, activer "Places API (New)")
+export GOOGLE_MAPS_API_KEY=xxxx
+python -m autolead run --cities "Lyon,Marseille,Toulouse" --gmaps-pages 3
 
 # Ajouter la recherche web (clé gratuite/payante : https://brave.com/search/api/)
 export BRAVE_API_KEY=xxxx
@@ -91,8 +96,9 @@ Séparateur `;` et encodage UTF-8 avec BOM pour une ouverture directe dans Excel
 
 ## Ce qui n'est volontairement pas scrapé
 
-Google Maps, PagesJaunes, Facebook, LinkedIn, annuaires (societe.com, pappers...) : leurs conditions
-d'utilisation l'interdisent et ils bloquent les robots. L'outil passe par des sources ouvertes (OSM,
+Scraping direct de Google Maps, PagesJaunes, Facebook, LinkedIn et des annuaires (societe.com,
+pappers...) : leurs conditions d'utilisation l'interdisent et ils bloquent les robots. Google Maps est
+couvert par son API officielle (source `gmaps`, payante au-delà du quota gratuit mensuel). L'outil passe par des sources ouvertes (OSM,
 SIRENE) et les sites des entreprises eux-mêmes, et respecte `robots.txt`.
 
 ## Cadre légal (France / RGPD)

@@ -4,6 +4,7 @@ from autolead.config import refine_category
 from autolead.crawler import verify_tokens
 from autolead.extract import clean_email, discover_links, email_kind, extract_emails, is_role
 from autolead.guess import candidate_domains
+from autolead.sources.gmaps import place_to_business
 from autolead.sources.osm import element_to_business, selector_index
 from autolead.sources.sirene import result_to_businesses
 from autolead.utils import registrable, site_from_url
@@ -120,6 +121,16 @@ class SourceParsingTests(unittest.TestCase):
         self.assertEqual(out[0]["alt_name"], "DUPONT JEAN")
         self.assertEqual(out[0]["lat"], 48.84)
         self.assertEqual(result_to_businesses({"nom_complet": "[NON-DIFFUSIBLE]"}, "garage", "45.20A"), [])
+
+    def test_gmaps_place(self):
+        p = {"id": "abc", "displayName": {"text": "Carrosserie Martin"}, "websiteUri": "https://carrosserie-martin.fr/",
+             "nationalPhoneNumber": "04 78 00 00 00", "formattedAddress": "1 Rue X, 69003 Lyon",
+             "addressComponents": [{"longText": "69003", "types": ["postal_code"]},
+                                   {"longText": "Lyon", "types": ["locality", "political"]}],
+             "location": {"latitude": 45.7, "longitude": 4.8}}
+        b = place_to_business(p, "garage")
+        self.assertEqual((b["category"], b["postal_code"], b["city"]), ("carrosserie", "69003", "Lyon"))
+        self.assertIsNone(place_to_business({**p, "businessStatus": "CLOSED_PERMANENTLY"}, "garage"))
 
     def test_refine_category(self):
         self.assertEqual(refine_category("garage", "Pare-Brise Express"), "vitrage")

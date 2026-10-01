@@ -12,7 +12,7 @@ from .db import DB
 from .export import export_csv
 from .guess import run_guess
 from .net import DEFAULT_UA, make_session
-from .sources import collect_file, collect_osm, collect_search, collect_sirene
+from .sources import collect_file, collect_gmaps, collect_osm, collect_search, collect_sirene
 from .utils import log
 from .verify import run_verify
 
@@ -62,6 +62,8 @@ def resolve_sources(args) -> set[str]:
             sources.add("sirene")
         if brave_key:
             sources.add("search")
+        if args.google_key or os.environ.get("GOOGLE_MAPS_API_KEY"):
+            sources.add("gmaps")
     else:
         sources = set(_split(args.sources))
     if args.file:
@@ -95,6 +97,14 @@ async def collect(db: DB, args) -> None:
                 cities = _split(args.cities) if args.cities else DEFAULT_CITIES
                 tasks.append(collect_search(db, session, cats, cities, api_key=key, pages=args.search_pages,
                                             qps=args.search_qps, country=args.country))
+        if "gmaps" in sources:
+            key = args.google_key or os.environ.get("GOOGLE_MAPS_API_KEY")
+            if not key:
+                log("[gmaps] ignoré : définissez GOOGLE_MAPS_API_KEY ou --google-key")
+            else:
+                cities = _split(args.cities) if args.cities else DEFAULT_CITIES
+                tasks.append(collect_gmaps(db, session, cats, cities, api_key=key, pages=args.gmaps_pages,
+                                           qps=args.gmaps_qps, country=args.country))
         await asyncio.gather(*tasks)
     if "file" in sources and args.file:
         collect_file(db, args.file, args.file_category)
@@ -116,7 +126,7 @@ def export(db: DB, args) -> None:
 
 async def run_all(db: DB, args) -> None:
     await collect(db, args)
-    if not args.no_guess and "sirene" in resolve_sources(args):
+    if not args.no_guess and resolve_sources(args) & {"sirene", "gmaps"}:
         await run_guess(db, dns_concurrency=args.dns_concurrency)
     await crawl(db, args)
     if not args.no_verify:
@@ -138,14 +148,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_collect = argparse.ArgumentParser(add_help=False)
     g = p_collect.add_argument_group("collecte")
     g.add_argument("--sources", default="auto",
-                   help="osm,sirene,search,file ou 'auto' (osm + sirene + search si clé Brave)")
+                   help="osm,sirene,gmaps,search,file ou 'auto' (osm + sirene + gmaps/search si clé)")
     g.add_argument("--categories", default="all", help="liste séparée par des virgules, ou 'all'")
     g.add_argument("--country", default="FR", help="code pays ISO (OSM) [FR]")
     g.add_argument("--depts", help="départements, ex. 75,92,93 ou 'all' (défaut : France entière)")
     g.add_argument("--osm-area", help='zone Overpass libre, ex. \'area["name"="Lyon"]["admin_level"="8"]\'')
     g.add_argument("--sirene-rate", type=float, default=6.0, help="requêtes/s API SIRENE (max 7) [6]")
     g.add_argument("--brave-key", help="clé API Brave Search (ou variable BRAVE_API_KEY)")
-    g.add_argument("--cities", help="villes pour la recherche, séparées par des virgules")
+    g.add_argument("--google-key", help="clé API Google Places (ou variable GOOGLE_MAPS_API_KEY)")
+    g.add_argument("--gmaps-pages", type=int, default=3, help="pages de 20 résultats Google par requête (max 3) [3]")
+    g.add_argument("--gmaps-qps", type=float, default=5.0, help="requêtes/s Google Places [5]")
+    g.add_argument("--cities", help="villes pour gmaps/search, séparées par des virgules")
     g.add_argument("--search-pages", type=int, default=1, help="pages de 20 résultats par requête [1]")
     g.add_argument("--search-qps", type=float, default=1.0, help="requêtes/s Brave (selon votre offre) [1]")
     g.add_argument("--file", help="fichier .txt (un site par ligne) ou .csv (colonne site/url/domaine)")
