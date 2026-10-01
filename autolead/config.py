@@ -13,60 +13,60 @@ CATEGORIES: dict[str, dict] = {
         "label": "Garage, mécanique, entretien",
         "naf": ["45.20A"],
         "osm": [("shop", "car_repair")],
-        "keywords": ["garage automobile", "garage mécanique auto", "réparation automobile"],
+        "keywords": ["garage automobile", "garage mécanique auto", "réparation automobile", "garagiste", "garage agréé", "entretien voiture", "atelier mécanique automobile", "vidange révision voiture", "garage indépendant"],
     },
     "carrosserie": {
         "label": "Carrosserie, peinture, débosselage",
         "naf": [],
         "osm": [],
-        "keywords": ["carrosserie automobile", "carrossier peintre automobile"],
+        "keywords": ["carrosserie automobile", "carrossier peintre automobile", "débosselage sans peinture", "peinture automobile", "réparation carrosserie"],
         "name_pattern": r"carross|d[ée]bossel",
     },
     "vitrage": {
         "label": "Pare-brise, vitrage auto",
         "naf": [],
         "osm": [],
-        "keywords": ["remplacement pare-brise", "vitrage automobile"],
+        "keywords": ["remplacement pare-brise", "vitrage automobile", "réparation pare-brise"],
         "name_pattern": r"pare[- ]?brise|vitrage",
     },
     "concession": {
         "label": "Concession, vente VN/VO, mandataire",
         "naf": ["45.11Z"],
         "osm": [("shop", "car")],
-        "keywords": ["concessionnaire automobile", "vente voiture occasion", "mandataire automobile"],
+        "keywords": ["concessionnaire automobile", "vente voiture occasion", "mandataire automobile", "revendeur automobile", "négociant automobile", "voitures occasion garanties", "dépôt vente voiture", "achat vente automobile", "import voiture", "agent automobile", "vente véhicules neufs"],
     },
     "poids_lourds": {
         "label": "Poids lourds, utilitaires, camions",
         "naf": ["45.19Z", "45.20B"],
         "osm": [("shop", "truck"), ("shop", "truck_repair")],
-        "keywords": ["garage poids lourds", "vente camion utilitaire"],
+        "keywords": ["garage poids lourds", "vente camion utilitaire", "utilitaires occasion", "réparation camion"],
         "name_pattern": r"poids[- ]lourds?|\btrucks?\b|camion",
     },
     "pieces": {
         "label": "Pièces détachées, équipements auto",
         "naf": ["45.31Z", "45.32Z"],
         "osm": [("shop", "car_parts")],
-        "keywords": ["pièces détachées auto", "équipement automobile magasin"],
+        "keywords": ["pièces détachées auto", "équipement automobile magasin", "pièces auto occasion", "accessoires automobile"],
     },
     "pneus": {
         "label": "Pneus, centres auto",
         "naf": ["22.11Z"],
         "osm": [("shop", "tyres")],
-        "keywords": ["pneus montage", "centre auto pneus"],
+        "keywords": ["pneus montage", "centre auto pneus", "pneumatiques", "géométrie parallélisme"],
         "name_pattern": r"\bpneu",
     },
     "moto": {
         "label": "Moto, scooter",
         "naf": ["45.40Z"],
         "osm": [("shop", "motorcycle"), ("shop", "motorcycle_repair")],
-        "keywords": ["garage moto", "concessionnaire moto"],
+        "keywords": ["garage moto", "concessionnaire moto", "moto occasion", "scooter réparation"],
         "name_pattern": r"\bmotos?\b|scooter",
     },
     "location": {
         "label": "Location de véhicules",
         "naf": ["77.11A", "77.11B", "77.12Z"],
         "osm": [("amenity", "car_rental")],
-        "keywords": ["location voiture", "location utilitaire"],
+        "keywords": ["location voiture", "location utilitaire", "location véhicule", "location longue durée voiture"],
     },
     "controle_technique": {
         "label": "Contrôle technique",
@@ -85,21 +85,21 @@ CATEGORIES: dict[str, dict] = {
         "label": "Lavage, detailing",
         "naf": [],
         "osm": [("amenity", "car_wash")],
-        "keywords": ["lavage auto", "detailing automobile"],
+        "keywords": ["lavage auto", "detailing automobile", "nettoyage voiture", "station de lavage"],
         "name_pattern": r"lavage|\bwash\b|detailing",
     },
     "depannage": {
         "label": "Dépannage, remorquage (NAF 52.21Z : large)",
         "naf": ["52.21Z"],
         "osm": [],
-        "keywords": ["dépannage remorquage auto"],
+        "keywords": ["dépannage remorquage auto", "dépanneuse", "remorquage véhicule"],
         "name_pattern": r"d[ée]pann|remorqu",
     },
     "casse": {
         "label": "Casse auto, centre VHU",
         "naf": ["38.31Z"],
         "osm": [("industrial", "scrap_yard")],
-        "keywords": ["casse automobile", "centre VHU"],
+        "keywords": ["casse automobile", "centre VHU", "épaviste", "rachat voiture épave"],
     },
     "station_service": {
         "label": "Station-service",
@@ -117,7 +117,7 @@ CATEGORIES: dict[str, dict] = {
         "label": "Constructeurs, équipementiers",
         "naf": ["29.10Z", "29.20Z", "29.31Z", "29.32Z"],
         "osm": [],
-        "keywords": ["équipementier automobile"],
+        "keywords": ["équipementier automobile", "préparation automobile", "tuning automobile", "électricité automobile", "climatisation automobile", "reprogrammation moteur"],
     },
 }
 
@@ -153,6 +153,23 @@ DEFAULT_CITIES = [
     "Saint-Denis", "Roubaix", "Tourcoing", "Avignon", "Poitiers", "Pau", "La Rochelle", "Calais",
     "Cannes", "Antibes", "Ajaccio", "Bastia", "Valence", "Troyes", "Chambéry", "Lorient", "Niort",
     "Vannes", "Bayonne", "Colmar", "Quimper",
+]
+
+# Préfectures (en plus des grandes villes) : --cities all
+PREFECTURES = [
+    "Bourg-en-Bresse", "Laon", "Moulins", "Digne-les-Bains", "Gap", "Privas", "Charleville-Mézières",
+    "Foix", "Carcassonne", "Rodez", "Aurillac", "Angoulême", "Bourges", "Tulle", "Guéret",
+    "Saint-Brieuc", "Périgueux", "Évreux", "Chartres", "Auch", "Lons-le-Saunier", "Mont-de-Marsan",
+    "Blois", "Le Puy-en-Velay", "Cahors", "Agen", "Mende", "Saint-Lô", "Châlons-en-Champagne",
+    "Chaumont", "Laval", "Bar-le-Duc", "Nevers", "Beauvais", "Alençon", "Arras", "Tarbes",
+    "Vesoul", "Mâcon", "Albi", "Montauban", "Évry-Courcouronnes", "Créteil", "Cergy", "Nanterre",
+    "Bobigny", "Versailles", "Melun", "Auxerre", "Épinal", "Belfort", "La Roche-sur-Yon", "Draguignan",
+    "Basse-Terre", "Fort-de-France", "Cayenne", "Mamoudzou", "Pointe-à-Pitre", "Châteauroux",
+    "Saint-Pierre", "Le Tampon", "Dunkerque", "Béziers", "Saint-Nazaire", "Cholet", "Narbonne",
+    "Montélimar", "Arles", "Fréjus", "Hyères", "Sète", "Brive-la-Gaillarde", "Saint-Quentin",
+    "Bourgoin-Jallieu", "Vienne", "Thionville", "Saint-Malo", "Lens", "Douai", "Valenciennes",
+    "Maubeuge", "Compiègne", "Meaux", "Chalon-sur-Saône", "Villefranche-sur-Saône", "Roanne",
+    "Annemasse", "Thonon-les-Bains", "Aix-les-Bains", "Salon-de-Provence", "Martigues", "Aubagne",
 ]
 
 # Webmails / FAI : adresse "non pro"

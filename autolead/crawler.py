@@ -15,7 +15,7 @@ from urllib.robotparser import RobotFileParser
 import aiohttp
 
 from .db import DB
-from .extract import discover_external_sites, discover_links, extract_emails, extract_phones
+from .extract import discover_external_sites, discover_links, extract_emails, extract_phones, internal_links
 from .net import DEFAULT_UA, make_session
 from .utils import Progress, host_of, log, registrable
 
@@ -77,7 +77,9 @@ class Crawler:
         self.respect_robots = respect_robots
         self.follow_partners = follow_partners
 
-    async def crawl(self, url: str, res: CrawlResult, keep_text: bool = False) -> CrawlResult:
+    async def crawl(self, url: str, res: CrawlResult, keep_text: bool = False,
+                    deep_pages: int = 0) -> CrawlResult:
+        """deep_pages > 0 : après les pages contact, parcourt tout le site (pages d'agences en premier)."""
         robots: dict[str, RobotFileParser | None] = {}
         home = None
         for candidate in self._home_candidates(url):
@@ -109,6 +111,14 @@ class Crawler:
         if not res.emails and res.pages < self.max_pages:
             extra = [u for u in await self._sitemap_contacts(home.url, robots) if _norm(u) not in seen]
             await self._fetch_batch(extra[: self.max_pages - res.pages], res, seen, robots, keep_text)
+
+        if deep_pages:
+            frontier = [home] + pages
+            while frontier and res.pages < deep_pages:
+                todo: list[str] = []
+                for p in frontier:
+                    todo += [u for u in internal_links(p.text, p.url) if _norm(u) not in seen and u not in todo]
+                frontier = await self._fetch_batch(todo[: deep_pages - res.pages], res, seen, robots, keep_text)
         res.status = "ok"
         return res
 
@@ -180,7 +190,7 @@ class Crawler:
                 if r.status >= 400:
                     return None
                 ctype = r.headers.get("Content-Type", "").lower()
-                if ctype and not any(t in ctype for t in ("html", "text/plain", "xml")):
+                if ctype and not any(t in ctype for t in ("html", "text/plain", "xml", "vcard", "directory")):
                     return None
                 chunks, size = [], 0
                 async for chunk in r.content.iter_chunked(65536):
@@ -232,7 +242,8 @@ def verify_tokens(text: str, tokens: list[str]) -> bool:
 
 async def run_crawl(db: DB, *, concurrency: int = 150, max_pages: int = 10, timeout: float = 15.0,
                     site_timeout: float = 60.0, user_agent: str = DEFAULT_UA, limit: int | None = None,
-                    trust_env: bool = True, follow_partners: bool = True, rounds: int = 3) -> None:
+                    trust_env: bool = True, follow_partners: bool = True, rounds: int = 3,
+                    deep: bool = False, deep_pages: int = 60) -> None:
     # getaddrinfo tourne dans un pool de threads : on l'agrandit pour ne pas brider le DNS
     asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=min(256, concurrency + 16)))
     # Chaque tour visite les sites en attente, dont les sites partenaires découverts au tour précédent
@@ -244,13 +255,18 @@ async def run_crawl(db: DB, *, concurrency: int = 150, max_pages: int = 10, time
             return
         label = "" if n == 1 else f" (tour {n} : sites partenaires découverts)"
         log(f"[crawl] {len(sites)} sites à visiter{label}, {concurrency} en parallèle")
+        networks = db.network_sites()
+        if networks and n == 1:
+            log(f"[crawl] {len(networks)} sites de réseaux (≥3 établissements) : visite complète jusqu'à "
+                f"{deep_pages} pages")
         await _crawl_round(db, sites, concurrency=concurrency, max_pages=max_pages, timeout=timeout,
                            site_timeout=site_timeout, user_agent=user_agent, trust_env=trust_env,
-                           follow_partners=follow_partners)
+                           follow_partners=follow_partners, deep=deep, deep_pages=deep_pages,
+                           networks=networks)
 
 
 async def _crawl_round(db: DB, sites, *, concurrency, max_pages, timeout, site_timeout, user_agent,
-                       trust_env, follow_partners) -> None:
+                       trust_env, follow_partners, deep=False, deep_pages=60, networks=frozenset()) -> None:
     queue: asyncio.Queue = asyncio.Queue()
     for s in sites:
         queue.put_nowait(s)
@@ -269,9 +285,12 @@ async def _crawl_round(db: DB, sites, *, concurrency, max_pages, timeout, site_t
                 except asyncio.QueueEmpty:
                     return
                 res = CrawlResult()
+                go_deep = deep or site["site_key"] in networks
                 try:
-                    await asyncio.wait_for(crawler.crawl(site["url"], res, keep_text=bool(site["guessed"])),
-                                           site_timeout)
+                    await asyncio.wait_for(
+                        crawler.crawl(site["url"], res, keep_text=bool(site["guessed"]),
+                                      deep_pages=deep_pages if go_deep else 0),
+                        site_timeout * 5 if go_deep else site_timeout)
                 except asyncio.TimeoutError:
                     res.status = "ok" if res.pages else "timeout"
                 except Exception as exc:  # un site ne doit jamais arrêter le crawl

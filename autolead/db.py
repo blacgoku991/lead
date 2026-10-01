@@ -130,6 +130,14 @@ class DB:
             sql += f" LIMIT {int(limit)}"
         return self.conn.execute(sql).fetchall()
 
+    def network_sites(self, min_businesses: int = 3) -> set[str]:
+        """Sites partagés par plusieurs établissements (réseaux, franchises, groupes)."""
+        rows = self.conn.execute(
+            "SELECT site_key FROM businesses WHERE site_key IS NOT NULL GROUP BY site_key HAVING COUNT(*) >= ?",
+            (min_businesses,),
+        )
+        return {r[0] for r in rows}
+
     def reset_sites_without_email(self) -> int:
         cur = self.conn.execute(
             "UPDATE sites SET status='pending' WHERE status='ok' "

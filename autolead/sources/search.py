@@ -39,8 +39,13 @@ async def _search(session, limiter, key: str, query: str, offset: int, country: 
 
 
 async def collect_search(db: DB, session: aiohttp.ClientSession, categories: list[str], cities: list[str],
-                         *, api_key: str, pages: int = 1, qps: float = 1.0, country: str = "FR") -> int:
-    queries = [(cat, kw, city) for cat in categories for kw in CATEGORIES[cat]["keywords"] for city in cities]
+                         *, api_key: str, pages: int = 1, qps: float = 1.0, country: str = "FR",
+                         keywords: list[str] | None = None) -> int:
+    if keywords:
+        queries = [("autre", kw, city) for kw in keywords for city in cities]
+    else:
+        queries = [(cat, kw, city) for cat in categories for kw in CATEGORIES[cat]["keywords"] for city in cities]
+    pages = max(1, min(pages, 10))  # l'API Brave donne au plus 10 pages de 20 résultats
     log(f"[search] {len(queries) * pages} requêtes ({qps}/s)")
     limiter = RateLimiter(qps)
     total = 0

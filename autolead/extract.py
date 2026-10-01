@@ -5,6 +5,7 @@ Gère mailto: encodés, entités HTML, \\u0040, protection Cloudflare, "contact 
 """
 from __future__ import annotations
 
+import base64
 import html
 import re
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
@@ -37,6 +38,8 @@ _HEX_LOCAL = re.compile(r"[0-9a-f]{20,}")
 
 _UESC = re.compile(r"\\u00([0-9a-fA-F]{2})|\\x([0-9a-fA-F]{2})")
 _MAILTO = re.compile(r"mailto:([^\"'<>\s]+)", re.I)
+# vCard intégrée dans un lien : href="data:text/vcard;charset=utf-8,BEGIN%3AVCARD..." ou en base64
+_DATA_VCARD = re.compile(r"data:text/(?:x-)?vcard[^,\"']*,([^\"'<>\s]+)", re.I)
 _CF_ATTR = re.compile(r"data-cfemail=[\"']([0-9a-fA-F]+)[\"']")
 _CF_HREF = re.compile(r"/cdn-cgi/l/email-protection#([0-9a-fA-F]+)")
 
@@ -60,6 +63,7 @@ _SKIP_EXT = re.compile(
 
 # Pages où l'on trouve des e-mails, avec un score de priorité
 CONTACT_HINTS = [
+    (re.compile(r"\.vcf\b|vcard|enregistrer le contact|carte de visite", re.I), 11),
     (re.compile(r"contact|joindre|[ée]crire", re.I), 10),
     (re.compile(r"mentions|l[ée]gal|impressum|imprint", re.I), 9),
     (re.compile(r"coordonn|infos?[- ]pratiques|nous[- ]trouver|plan[- ]d[- ]acc[eè]s|horaires", re.I), 6),
@@ -125,6 +129,18 @@ def extract_emails(text: str) -> set[str]:
         text = _JS_CONCAT.sub("", text)
     for local, dom in _DATA_ATTRS.findall(text):
         candidates.append(f"{local}@{dom}")
+
+    for m in _DATA_VCARD.finditer(text):
+        payload = m.group(1)
+        if ";base64" in m.group(0).lower():
+            try:
+                payload = base64.b64decode(payload + "=" * (-len(payload) % 4)).decode("utf-8", "replace")
+            except ValueError:
+                payload = ""
+        else:
+            payload = unquote(payload)
+        for e in re.findall(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,24}", payload, re.I):
+            candidates.append(e)
 
     for m in _MAILTO.findall(text):
         target = unquote(m).split("?", 1)[0]
@@ -261,3 +277,34 @@ def discover_external_sites(page_html: str, base_url: str, limit: int = 30) -> s
         if _AUTO_LINK.search(f"{anchor} {reg}"):
             found.add(f"{p.scheme}://{p.netloc}/")
     return found
+
+
+_BRANCH_HINT = re.compile(
+    r"garage|agence|centre|magasin|atelier|[ée]tablissement|store|point[- ]de[- ]vente|concession|"
+    r"carrosserie|nos[- ]|reseau|r[ée]seau|ville|departement|region|contact", re.I)
+
+
+def internal_links(page_html: str, base_url: str, limit: int = 300) -> list[str]:
+    """Tous les liens internes (HTML) de la page ; pages d'établissements / agences en premier."""
+    base_reg = registrable(urlsplit(base_url).hostname or "")
+    found: dict[str, int] = {}
+    for n, m in enumerate(_A_OPEN.finditer(page_html[:MAX_SCAN])):
+        if n > 5000 or len(found) >= limit:
+            break
+        hm = _HREF.search(m.group(1))
+        if not hm:
+            continue
+        href = html.unescape(next(g for g in hm.groups() if g is not None)).strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:")):
+            continue
+        try:
+            p = urlsplit(urljoin(base_url, href))
+        except ValueError:
+            continue
+        if p.scheme not in ("http", "https") or registrable(p.hostname or "") != base_reg:
+            continue
+        if _SKIP_EXT.search(p.path):
+            continue
+        clean = urlunsplit((p.scheme, p.netloc, p.path or "/", p.query, ""))
+        found.setdefault(clean, 0 if _BRANCH_HINT.search(unquote(p.path)) else 1)
+    return [u for u, _ in sorted(found.items(), key=lambda kv: kv[1])]

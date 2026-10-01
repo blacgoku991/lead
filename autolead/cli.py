@@ -6,7 +6,7 @@ import asyncio
 import os
 import sys
 
-from .config import CATEGORIES, DEFAULT_CITIES, DEPARTEMENTS
+from .config import CATEGORIES, DEFAULT_CITIES, DEPARTEMENTS, PREFECTURES
 from .crawler import run_crawl
 from .db import DB
 from .export import export_csv, export_phones_csv
@@ -62,6 +62,14 @@ def parse_dns_servers(value: str) -> list[str] | None:
     return _split(value)
 
 
+def parse_cities(value: str | None) -> list[str]:
+    if not value:
+        return DEFAULT_CITIES
+    if value == "all":
+        return list(dict.fromkeys(DEFAULT_CITIES + PREFECTURES))
+    return _split(value)
+
+
 def resolve_sources(args) -> set[str]:
     brave_key = args.brave_key or os.environ.get("BRAVE_API_KEY")
     if args.sources == "auto":
@@ -102,15 +110,16 @@ async def collect(db: DB, args) -> None:
             if not key:
                 log("[search] ignoré : définissez BRAVE_API_KEY ou --brave-key")
             else:
-                cities = _split(args.cities) if args.cities else DEFAULT_CITIES
+                cities = parse_cities(args.cities)
                 tasks.append(collect_search(db, session, cats, cities, api_key=key, pages=args.search_pages,
+                                            keywords=_split(args.keywords) or None,
                                             qps=args.search_qps, country=args.country))
         if "gmaps" in sources:
             key = args.google_key or os.environ.get("GOOGLE_MAPS_API_KEY")
             if not key:
                 log("[gmaps] ignoré : définissez GOOGLE_MAPS_API_KEY ou --google-key")
             else:
-                cities = _split(args.cities) if args.cities else DEFAULT_CITIES
+                cities = parse_cities(args.cities)
                 tasks.append(collect_gmaps(db, session, cats, cities, api_key=key, pages=args.gmaps_pages,
                                            qps=args.gmaps_qps, country=args.country))
         await asyncio.gather(*tasks)
@@ -125,7 +134,7 @@ async def crawl(db: DB, args) -> None:
         log(f"[crawl] {db.reset_failed_sites()} sites en échec remis en file")
     await run_crawl(db, concurrency=args.concurrency, max_pages=args.max_pages, timeout=args.timeout,
                     site_timeout=args.site_timeout, user_agent=args.user_agent, limit=args.limit,
-                    follow_partners=not args.no_partners)
+                    follow_partners=not args.no_partners, deep=args.deep, deep_pages=args.deep_pages)
 
 
 def export(db: DB, args) -> None:
@@ -172,7 +181,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--google-key", help="clé API Google Places (ou variable GOOGLE_MAPS_API_KEY)")
     g.add_argument("--gmaps-pages", type=int, default=3, help="pages de 20 résultats Google par requête (max 3) [3]")
     g.add_argument("--gmaps-qps", type=float, default=5.0, help="requêtes/s Google Places [5]")
-    g.add_argument("--cities", help="villes pour gmaps/search, séparées par des virgules")
+    g.add_argument("--cities", help="villes pour gmaps/search : liste séparée par des virgules, ou 'all'")
+    g.add_argument("--keywords", help="mots-clés de recherche à la place de ceux des catégories")
     g.add_argument("--search-pages", type=int, default=1, help="pages de 20 résultats par requête [1]")
     g.add_argument("--search-qps", type=float, default=1.0, help="requêtes/s Brave (selon votre offre) [1]")
     g.add_argument("--file", help="fichier .txt (un site par ligne) ou .csv (colonne site/url/domaine)")
@@ -186,6 +196,9 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--site-timeout", type=float, default=60.0, help="temps max par site en s [60]")
     g.add_argument("--limit", type=int, help="ne traiter que N sites (test)")
     g.add_argument("--retry-failed", action="store_true", help="re-tenter les sites injoignables")
+    g.add_argument("--deep", action="store_true",
+                   help="visiter tout le site (pas seulement contact/mentions) ; auto pour les réseaux")
+    g.add_argument("--deep-pages", type=int, default=60, help="pages max par site en mode complet [60]")
     g.add_argument("--no-partners", action="store_true",
                    help="ne pas suivre les liens vers d'autres sites auto (partenaires, réseau...)")
     g.add_argument("--recrawl-no-email", action="store_true",
