@@ -15,6 +15,12 @@ from ..db import DB
 from ..utils import RateLimiter, log
 
 API = "https://places.googleapis.com/v1/places:searchText"
+
+
+class KeyRejected(Exception):
+    """Clé refusée par Google (invalide, suspendue, API non activée, facturation) : inutile d'insister."""
+
+
 FIELDS = ",".join([
     "places.id", "places.displayName", "places.formattedAddress", "places.addressComponents",
     "places.websiteUri", "places.nationalPhoneNumber", "places.location", "places.businessStatus",
@@ -59,7 +65,10 @@ async def _search(session, limiter, key: str, query: str, page_token: str | None
                 if r.status == 429 or r.status >= 500:
                     await asyncio.sleep(2 ** attempt)
                     continue
-                log(f"[gmaps] HTTP {r.status} pour « {query} » : {(await r.text())[:200]}")
+                text = await r.text()
+                if r.status in (400, 401, 403):
+                    raise KeyRejected(f"HTTP {r.status} : {text[:400]}")
+                log(f"[gmaps] HTTP {r.status} pour « {query} » : {text[:200]}")
                 return {}
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
             await asyncio.sleep(2 ** attempt)
@@ -86,6 +95,15 @@ async def collect_gmaps(db: DB, session: aiohttp.ClientSession, categories: list
                 if not token:
                     break
 
-    await asyncio.gather(*(one(*q) for q in queries))
+    tasks = [asyncio.ensure_future(one(*q)) for q in queries]
+    try:
+        await asyncio.gather(*tasks)
+    except KeyRejected as exc:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        log(f"[gmaps] arrêt : clé Google refusée -> {exc}")
+        log("[gmaps] vérifiez la clé, l'activation de « Places API (New) » et la facturation du projet.")
+        log("[gmaps] les autres sources continuent normalement.")
     log(f"[gmaps] {total} nouveaux établissements")
     return total
