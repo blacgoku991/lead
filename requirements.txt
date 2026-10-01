@@ -1,0 +1,4 @@
+aiohttp>=3.9
+dnspython>=2.4
+# Optionnel (Linux/macOS), boucle asyncio plus rapide :
+# uvloop>=0.19

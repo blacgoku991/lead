@@ -1,0 +1,261 @@
+"""Crawler asynchrone : visite la page d'accueil + contact / mentions légales de chaque site.
+
+Des centaines de sites sont traités en parallèle ; chaque site est limité à quelques pages
+et quelques requêtes simultanées pour rester rapide et ne pas surcharger les petits serveurs.
+"""
+from __future__ import annotations
+
+import asyncio
+import re
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from urllib.parse import urljoin, urlsplit
+from urllib.robotparser import RobotFileParser
+
+import aiohttp
+
+from .db import DB
+from .extract import discover_links, extract_emails
+from .net import DEFAULT_UA, make_session
+from .utils import Progress, host_of, log, registrable
+
+FALLBACK_PATHS = (
+    "/contact", "/nous-contacter", "/mentions-legales", "/contactez-nous", "/contact.html", "/contact.php",
+)
+_META_CHARSET = re.compile(rb"""<meta[^>]+charset=["']?([a-zA-Z0-9_-]+)""", re.I)
+_NETWORK_ERRORS = (aiohttp.ClientError, asyncio.TimeoutError, ValueError, UnicodeError, OSError)
+
+
+@dataclass
+class Page:
+    url: str
+    text: str
+
+
+@dataclass
+class CrawlResult:
+    status: str = "pending"
+    final_url: str = ""
+    pages: int = 0
+    emails: dict = field(default_factory=dict)  # e-mail -> URL de la page où il a été trouvé
+    texts: list = field(default_factory=list)  # contenu des pages (vérification des domaines devinés)
+
+
+def _decode(body: bytes, charset: str | None) -> str:
+    if not charset:
+        m = _META_CHARSET.search(body[:4096])
+        charset = m.group(1).decode("ascii", "ignore") if m else None
+    if charset:
+        try:
+            return body.decode(charset, "replace")
+        except LookupError:
+            pass
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError:
+        return body.decode("cp1252", "replace")
+
+
+def _norm(url: str) -> str:
+    p = urlsplit(url)
+    host = (p.hostname or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    return f"{host}{p.path.rstrip('/')}?{p.query}"
+
+
+class Crawler:
+    def __init__(self, session: aiohttp.ClientSession, *, max_pages: int = 6, max_bytes: int = 1_500_000,
+                 user_agent: str = DEFAULT_UA, per_site_parallel: int = 3, respect_robots: bool = True):
+        self.session = session
+        self.max_pages = max_pages
+        self.max_bytes = max_bytes
+        self.user_agent = user_agent
+        self.per_site_parallel = per_site_parallel
+        self.respect_robots = respect_robots
+
+    async def crawl(self, url: str, res: CrawlResult, keep_text: bool = False) -> CrawlResult:
+        robots: dict[str, RobotFileParser | None] = {}
+        home = None
+        for candidate in self._home_candidates(url):
+            home = await self._fetch(candidate, robots)
+            if home:
+                break
+        if home is None:
+            res.status = "unreachable"
+            return res
+        res.final_url = home.url
+        self._consume(home, res, keep_text)
+
+        seen = {_norm(home.url), _norm(url)}
+        links = [u for u in discover_links(home.text, home.url) if _norm(u) not in seen]
+        await self._fetch_batch(links[: self.max_pages - 1], res, seen, robots, keep_text)
+
+        if not res.emails and res.pages < self.max_pages:
+            extra = [urljoin(home.url, p) for p in FALLBACK_PATHS]
+            extra = [u for u in extra if _norm(u) not in seen]
+            await self._fetch_batch(extra[: self.max_pages - res.pages], res, seen, robots, keep_text)
+        res.status = "ok"
+        return res
+
+    def _home_candidates(self, url: str) -> list[str]:
+        p = urlsplit(url if "://" in url else "https://" + url)
+        other = "http" if p.scheme == "https" else "https"
+        path = (p.path or "/") + (f"?{p.query}" if p.query else "")
+        hosts = [p.netloc]
+        if not p.netloc.startswith("www.") and not re.match(r"^[\d.:]+$", p.netloc):
+            hosts.append("www." + p.netloc)
+        out = [f"{p.scheme}://{h}{path}" for h in hosts] + [f"{other}://{p.netloc}{path}"]
+        if path != "/":
+            out.append(f"{p.scheme}://{p.netloc}/")
+        return out
+
+    async def _fetch_batch(self, urls, res, seen, robots, keep_text) -> None:
+        if not urls:
+            return
+        for u in urls:
+            seen.add(_norm(u))
+        sem = asyncio.Semaphore(self.per_site_parallel)
+
+        async def one(u: str) -> None:
+            async with sem:
+                page = await self._fetch(u, robots)
+            if page:
+                self._consume(page, res, keep_text)
+
+        await asyncio.gather(*(one(u) for u in urls))
+
+    def _consume(self, page: Page, res: CrawlResult, keep_text: bool) -> None:
+        res.pages += 1
+        for email in extract_emails(page.text):
+            res.emails.setdefault(email, page.url)
+        if keep_text:
+            res.texts.append(page.text[:400_000])
+
+    async def _fetch(self, url: str, robots: dict) -> Page | None:
+        if not await self._allowed(url, robots):
+            return None
+        try:
+            async with self.session.get(url, allow_redirects=True, max_redirects=6) as r:
+                if r.status >= 400:
+                    return None
+                ctype = r.headers.get("Content-Type", "").lower()
+                if ctype and not any(t in ctype for t in ("html", "text/plain", "xml")):
+                    return None
+                chunks, size = [], 0
+                async for chunk in r.content.iter_chunked(65536):
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size >= self.max_bytes:
+                        break
+                return Page(str(r.url), _decode(b"".join(chunks), r.charset))
+        except _NETWORK_ERRORS:
+            return None
+
+    async def _allowed(self, url: str, robots: dict) -> bool:
+        if not self.respect_robots:
+            return True
+        p = urlsplit(url)
+        origin = f"{p.scheme}://{p.netloc}"
+        if origin not in robots:
+            robots[origin] = await self._load_robots(origin)
+        rp = robots[origin]
+        return rp is None or rp.can_fetch(self.user_agent, url)
+
+    async def _load_robots(self, origin: str) -> RobotFileParser | None:
+        try:
+            async with self.session.get(origin + "/robots.txt", allow_redirects=True,
+                                        timeout=aiohttp.ClientTimeout(total=8)) as r:
+                if r.status in (401, 403):
+                    rp = RobotFileParser()
+                    rp.disallow_all = True
+                    return rp
+                if r.status >= 400:
+                    return None
+                body = await r.content.read(300_000)
+        except _NETWORK_ERRORS:
+            return None
+        rp = RobotFileParser()
+        rp.parse(body.decode("utf-8", "replace").splitlines())
+        return rp
+
+
+def verify_tokens(text: str, tokens: list[str]) -> bool:
+    """Le site deviné appartient-il bien à l'entreprise ? (code postal ou SIREN présent dans les pages)"""
+    digits = re.sub(r"(?<=\d)[\s. -](?=\d)", "", text)
+    for tok in tokens:
+        src = digits if len(tok) == 9 else text
+        if re.search(rf"(?<!\d){re.escape(tok)}(?!\d)", src):
+            return True
+    return False
+
+
+async def run_crawl(db: DB, *, concurrency: int = 150, max_pages: int = 6, timeout: float = 15.0,
+                    site_timeout: float = 60.0, user_agent: str = DEFAULT_UA, limit: int | None = None,
+                    trust_env: bool = True) -> None:
+    sites = db.pending_sites(limit)
+    if not sites:
+        log("[crawl] aucun site en attente.")
+        return
+    log(f"[crawl] {len(sites)} sites à visiter, {concurrency} en parallèle")
+    # getaddrinfo tourne dans un pool de threads : on l'agrandit pour ne pas brider le DNS
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=min(256, concurrency + 16)))
+
+    queue: asyncio.Queue = asyncio.Queue()
+    for s in sites:
+        queue.put_nowait(s)
+    progress = Progress("crawl", total=len(sites))
+    pending_commit = 0
+
+    async with make_session(concurrency=concurrency * 3, per_host=4, timeout=timeout,
+                            user_agent=user_agent, trust_env=trust_env) as session:
+        crawler = Crawler(session, max_pages=max_pages, user_agent=user_agent)
+
+        async def worker() -> None:
+            nonlocal pending_commit
+            while True:
+                try:
+                    site = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                res = CrawlResult()
+                try:
+                    await asyncio.wait_for(crawler.crawl(site["url"], res, keep_text=bool(site["guessed"])),
+                                           site_timeout)
+                except asyncio.TimeoutError:
+                    res.status = "ok" if res.pages else "timeout"
+                except Exception as exc:  # un site ne doit jamais arrêter le crawl
+                    res.status = "error"
+                    log(f"[crawl] erreur sur {site['url']}: {exc!r}")
+                _store(db, site, res, progress)
+                pending_commit += 1
+                if pending_commit >= 50:
+                    db.commit()
+                    pending_commit = 0
+                progress.tick()
+
+        ticker = asyncio.create_task(progress.run())
+        try:
+            await asyncio.gather(*(worker() for _ in range(concurrency)))
+        finally:
+            ticker.cancel()
+            db.commit()
+    log(progress.line())
+
+
+def _store(db: DB, site, res: CrawlResult, progress: Progress) -> None:
+    key = site["site_key"]
+    status = res.status
+    emails = res.emails
+    if site["guessed"] and status == "ok":
+        text = "\n".join(res.texts)
+        matched = [bid for bid, tokens in db.guess_owners(key) if verify_tokens(text, tokens)]
+        if matched:
+            db.link_guessed(key, res.final_url or site["url"], matched)
+            progress.add("domaines devinés confirmés", 1)
+        else:
+            status, emails = "unverified", {}
+    site_domains = {registrable(host_of(site["url"])), registrable(host_of(res.final_url))} - {""}
+    new = db.save_crawl(key, status, res.final_url, res.pages, emails, site_domains)
+    if new:
+        progress.add("e-mails", new)
+        progress.add("sites avec e-mail", 1)
