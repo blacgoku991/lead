@@ -5,7 +5,7 @@ import asyncio
 import re
 import sys
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .config import BLOCKED_SITE_DOMAINS
 
@@ -52,6 +52,23 @@ def domain_in(host: str, domains) -> bool:
     return False
 
 
+def normalized_page_url(url: str) -> str:
+    """Clé de fiche : conserve le chemin et les paramètres d'identité, ignore le tracking."""
+    try:
+        p = urlsplit(url)
+        host = (p.hostname or "").lower().rstrip(".")
+        host = host[4:] if host.startswith("www.") else host
+        port = p.port
+        if port and port not in (80, 443):
+            host += f":{port}"
+        params = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
+                  if not k.lower().startswith("utm_") and k.lower() not in ("gclid", "fbclid", "msclkid")]
+        query = urlencode(sorted(params))
+        return host + (p.path.rstrip("/") or "/") + ("?" + query if query else "")
+    except (ValueError, TypeError):
+        return ""
+
+
 def site_from_url(raw: str | None) -> tuple[str | None, str | None]:
     """Normalise un site web -> (clé unique du site, URL de départ). (None, None) si inutilisable."""
     if not raw:
@@ -64,19 +81,22 @@ def site_from_url(raw: str | None) -> tuple[str | None, str | None]:
     try:
         p = urlsplit(raw)
         host = (p.hostname or "").lower().rstrip(".")
+        port = p.port
     except ValueError:
         return None, None
-    if p.scheme not in ("http", "https") or "." not in host:
+    if p.scheme not in ("http", "https") or "." not in host or p.username or p.password:
         return None, None
     if host not in SHARED_HOSTS and domain_in(host, BLOCKED_SITE_DOMAINS):
         return None, None
     key = host[4:] if host.startswith("www.") else host
+    if port and port not in (80, 443):
+        key += f":{port}"
     if host in SHARED_HOSTS:
         segs = [s for s in p.path.split("/") if s]
         if not segs:
             return None, None
         key = f"{host}/{'/'.join(segs[:2])}"
-    return key, f"{p.scheme}://{p.netloc}{p.path or '/'}"
+    return key, urlunsplit((p.scheme, p.netloc, p.path or "/", p.query, ""))
 
 
 class RateLimiter:
