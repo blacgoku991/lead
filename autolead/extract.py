@@ -153,6 +153,38 @@ def extract_emails(text: str) -> set[str]:
     return out
 
 
+_TEL_LINK = re.compile(r"tel:(\+?[\d\s.() -]{6,25})", re.I)
+_FR_PHONE = re.compile(
+    r"(?<![\d.])(?:\+33\s?|0033\s?|0)\s?[1-9](?:[\s. -]?\d{2}){4}(?![\d])"
+)
+
+
+def _norm_phone(raw: str) -> str | None:
+    """Normalise un numéro français au format 0X XX XX XX XX ; None si invalide."""
+    d = re.sub(r"[^\d+]", "", raw)
+    if d.startswith("+33"):
+        d = "0" + d[3:]
+    elif d.startswith("0033"):
+        d = "0" + d[4:]
+    if len(d) != 10 or not d.startswith("0") or d[1] == "0":
+        return None
+    return " ".join([d[:2], d[2:4], d[4:6], d[6:8], d[8:10]])
+
+
+def extract_phones(text: str) -> set[str]:
+    text = text[:MAX_SCAN]
+    out = set()
+    for raw in _TEL_LINK.findall(text):
+        p = _norm_phone(raw)
+        if p:
+            out.add(p)
+    for m in _FR_PHONE.finditer(text):
+        p = _norm_phone(m.group())
+        if p:
+            out.add(p)
+    return out
+
+
 def email_kind(email: str, site_domains: set[str]) -> str:
     """'domaine_site' (même domaine que le site), 'pro' (domaine d'entreprise) ou 'gratuit' (webmail/FAI)."""
     domain = email.rsplit("@", 1)[1]

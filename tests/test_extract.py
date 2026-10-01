@@ -2,7 +2,7 @@ import unittest
 
 from autolead.config import refine_category
 from autolead.crawler import verify_tokens
-from autolead.extract import clean_email, discover_external_sites, discover_links, email_kind, extract_emails, is_role
+from autolead.extract import clean_email, discover_external_sites, discover_links, extract_phones, email_kind, extract_emails, is_role
 from autolead.guess import candidate_domains
 from autolead.sources.gmaps import place_to_business
 from autolead.sources.osm import element_to_business, selector_index
@@ -46,6 +46,11 @@ class ExtractTests(unittest.TestCase):
                   @media screen { body {} }"""
         self.assertEqual(extract_emails(html), {"contact@garage-roux.fr", "atelier@garage-roux.fr",
                                                 "devis@garage-roux.fr", "vente@garage-roux.fr"})
+
+    def test_phones(self):
+        html = """<a href="tel:+33478123456">Appeler</a> Tél. 04.78.12.34.56 — 06 12 34 56 78
+                  SIRET 123 456 789 00012, code 69003, réf 0012345678901"""
+        self.assertEqual(extract_phones(html), {"04 78 12 34 56", "06 12 34 56 78"})
 
     def test_newline_before_at_is_not_glued(self):
         self.assertEqual(extract_emails("Contact\n@garage.fr"), set())

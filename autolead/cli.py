@@ -9,7 +9,7 @@ import sys
 from .config import CATEGORIES, DEFAULT_CITIES, DEPARTEMENTS
 from .crawler import run_crawl
 from .db import DB
-from .export import export_csv
+from .export import export_csv, export_phones_csv
 from .guess import run_guess
 from .net import DEFAULT_UA, make_session
 from .sources import collect_file, collect_gmaps, collect_osm, collect_search, collect_sirene
@@ -131,6 +131,9 @@ async def crawl(db: DB, args) -> None:
 def export(db: DB, args) -> None:
     value = getattr(args, "export_categories", "all")
     cats = parse_categories(value) if value and value != "all" else None
+    if getattr(args, "telephones", False):
+        export_phones_csv(db, args.output, categories=cats, sep=args.sep)
+        return
     export_csv(db, args.output, pro_only=args.pro_only, mx_only=args.mx_only, categories=cats,
                dedupe=not args.no_dedupe, sep=args.sep)
 
@@ -198,6 +201,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--mx-only", action="store_true", help="uniquement les domaines au MX valide")
     g.add_argument("--no-dedupe", action="store_true", help="garder les doublons (une ligne par entreprise)")
     g.add_argument("--sep", default=";", help="séparateur CSV [;]")
+    g.add_argument("--telephones", action="store_true",
+                   help="exporter les entreprises avec téléphone (même sans e-mail), une ligne par entreprise")
 
     parser = argparse.ArgumentParser(
         prog="autolead",

@@ -15,7 +15,7 @@ from urllib.robotparser import RobotFileParser
 import aiohttp
 
 from .db import DB
-from .extract import discover_external_sites, discover_links, extract_emails
+from .extract import discover_external_sites, discover_links, extract_emails, extract_phones
 from .net import DEFAULT_UA, make_session
 from .utils import Progress, host_of, log, registrable
 
@@ -38,6 +38,7 @@ class CrawlResult:
     final_url: str = ""
     pages: int = 0
     emails: dict = field(default_factory=dict)  # e-mail -> URL de la page où il a été trouvé
+    phones: set = field(default_factory=set)
     texts: list = field(default_factory=list)  # contenu des pages (vérification des domaines devinés)
     partners: set = field(default_factory=set)  # sites auto externes cités (partenaires, réseau...)
 
@@ -104,6 +105,10 @@ class Crawler:
             extra = [urljoin(home.url, p) for p in FALLBACK_PATHS]
             extra = [u for u in extra if _norm(u) not in seen]
             await self._fetch_batch(extra[: self.max_pages - res.pages], res, seen, robots, keep_text)
+
+        if not res.emails and res.pages < self.max_pages:
+            extra = [u for u in await self._sitemap_contacts(home.url, robots) if _norm(u) not in seen]
+            await self._fetch_batch(extra[: self.max_pages - res.pages], res, seen, robots, keep_text)
         res.status = "ok"
         return res
 
@@ -141,10 +146,31 @@ class Crawler:
         res.pages += 1
         for email in extract_emails(page.text):
             res.emails.setdefault(email, page.url)
+        res.phones |= extract_phones(page.text)
         if keep_text:
             res.texts.append(page.text[:400_000])
         if self.follow_partners:
             res.partners |= discover_external_sites(page.text, page.url)
+
+    async def _sitemap_contacts(self, home_url: str, robots: dict) -> list[str]:
+        """URLs de type contact / mentions / à propos listées dans le sitemap.xml."""
+        origin = f"{urlsplit(home_url).scheme}://{urlsplit(home_url).netloc}"
+        hint = re.compile(r"contact|mentions|legal|coordonn|a-propos|apropos|about|infos", re.I)
+        urls: list[str] = []
+        for sm in (origin + "/sitemap.xml", origin + "/sitemap_index.xml"):
+            page = await self._fetch(sm, robots)
+            if not page:
+                continue
+            locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", page.text, re.I)
+            # sitemap index : on ouvre un sous-sitemap qui parle de contact/pages
+            for sub in [u for u in locs if u.endswith(".xml") and hint.search(u)][:2]:
+                subp = await self._fetch(sub, robots)
+                if subp:
+                    locs += re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", subp.text, re.I)
+            urls += [u for u in locs if not u.endswith(".xml") and hint.search(u)]
+            if urls:
+                break
+        return urls[:6]
 
     async def _fetch(self, url: str, robots: dict) -> Page | None:
         if not await self._allowed(url, robots):
@@ -271,6 +297,7 @@ def _store(db: DB, site, res: CrawlResult, progress: Progress) -> None:
     key = site["site_key"]
     status = res.status
     emails = res.emails
+    phones = res.phones
     if site["guessed"] and status == "ok":
         text = "\n".join(res.texts)
         matched = [bid for bid, tokens in db.guess_owners(key) if verify_tokens(text, tokens)]
@@ -278,9 +305,9 @@ def _store(db: DB, site, res: CrawlResult, progress: Progress) -> None:
             db.link_guessed(key, res.final_url or site["url"], matched)
             progress.add("domaines devinés confirmés", 1)
         else:
-            status, emails = "unverified", {}
+            status, emails, phones = "unverified", {}, set()
     site_domains = {registrable(host_of(site["url"])), registrable(host_of(res.final_url))} - {""}
-    new = db.save_crawl(key, status, res.final_url, res.pages, emails, site_domains)
+    new = db.save_crawl(key, status, res.final_url, res.pages, emails, site_domains, phones)
     if status == "ok" and res.partners:
         added = db.add_businesses([
             {"source": "lien", "source_id": url, "name": host_of(url), "category": "partenaire",

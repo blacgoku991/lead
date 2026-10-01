@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS emails (
 CREATE INDEX IF NOT EXISTS idx_emails_domain ON emails(domain);
 CREATE INDEX IF NOT EXISTS idx_emails_biz ON emails(business_id);
 
+CREATE TABLE IF NOT EXISTS site_phones (
+    site_key TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    PRIMARY KEY (site_key, phone)
+);
+
 CREATE TABLE IF NOT EXISTS dns_checked (
     domain TEXT PRIMARY KEY,
     ok INTEGER NOT NULL
@@ -140,11 +146,13 @@ class DB:
         return cur.rowcount
 
     def save_crawl(self, site_key: str, status: str, final_url: str, pages: int,
-                   emails: dict[str, str], site_domains: set[str]) -> int:
+                   emails: dict[str, str], site_domains: set[str], phones: set[str] | None = None) -> int:
         cur = self.conn.cursor()
         n = 0
         for email, src in emails.items():
             n += self._add_email(cur, email, site_domains, site_key=site_key, source_url=src)
+        for phone in phones or ():
+            cur.execute("INSERT OR IGNORE INTO site_phones (site_key, phone) VALUES (?, ?)", (site_key, phone))
         cur.execute(
             "UPDATE sites SET status=?, final_url=?, pages=?, crawled_at=CURRENT_TIMESTAMP WHERE site_key=?",
             (status, final_url, pages, site_key),
