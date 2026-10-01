@@ -54,6 +54,14 @@ def parse_departements(value: str | None) -> list[str] | None:
     return deps
 
 
+def parse_dns_servers(value: str) -> list[str] | None:
+    if value == "public":
+        return None
+    if value == "system":
+        return []
+    return _split(value)
+
+
 def resolve_sources(args) -> set[str]:
     brave_key = args.brave_key or os.environ.get("BRAVE_API_KEY")
     if args.sources == "auto":
@@ -196,6 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("collect", parents=[common, p_collect], help="récupérer les entreprises (OSM, SIRENE...)")
     p_guess = sub.add_parser("guess", parents=[common, p_dns], help="deviner le site des entreprises sans site")
     p_guess.add_argument("--limit", type=int)
+    p_guess.add_argument("--dns-servers", default="public",
+                         help="'public' (Cloudflare/Google/Quad9, rapide), 'system' (DNS de la box) ou liste d'IP")
     sub.add_parser("crawl", parents=[common, p_crawl], help="visiter les sites et extraire les e-mails")
     p_verify = sub.add_parser("verify", parents=[common, p_dns], help="vérifier les MX des domaines e-mail")
     p_verify.add_argument("--recheck", action="store_true")
@@ -223,7 +233,8 @@ def main(argv: list[str] | None = None) -> None:
             _run(collect(db, args))
             print_stats(db)
         elif args.cmd == "guess":
-            _run(run_guess(db, dns_concurrency=args.dns_concurrency, limit=args.limit))
+            _run(run_guess(db, dns_concurrency=args.dns_concurrency, limit=args.limit,
+                           dns_servers=parse_dns_servers(args.dns_servers)))
         elif args.cmd == "crawl":
             _run(crawl(db, args))
         elif args.cmd == "verify":

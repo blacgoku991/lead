@@ -13,6 +13,7 @@ from collections import defaultdict
 
 import dns.asyncresolver
 import dns.exception
+import dns.resolver
 
 from .db import DB
 from .utils import Progress, log
@@ -55,52 +56,95 @@ def business_tokens(postal_code: str | None, siren: str | None) -> list[str]:
     return tokens
 
 
-async def _exists(resolver, domain: str) -> bool:
+# Résolveurs publics rapides : le DNS de la box limite souvent à quelques dizaines de requêtes/s
+PUBLIC_DNS = ["1.1.1.1", "8.8.8.8", "9.9.9.9", "1.0.0.1", "8.8.4.4", "149.112.112.112"]
+
+
+async def _exists(resolver, domain: str) -> bool | None:
+    """True = existe, False = n'existe pas, None = pas de réponse (sera retesté au prochain lancement)."""
     try:
         await resolver.resolve(domain, "A")
         return True
-    except dns.exception.DNSException:
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
         return False
+    except dns.exception.DNSException:
+        return None
 
 
-async def run_guess(db: DB, *, dns_concurrency: int = 300, limit: int | None = None) -> int:
+def make_resolver(servers: list[str] | None):
+    if servers == []:  # résolveur du système
+        resolver = dns.asyncresolver.Resolver()
+    else:
+        resolver = dns.asyncresolver.Resolver(configure=False)
+        resolver.nameservers = servers or PUBLIC_DNS
+        resolver.rotate = True
+    resolver.timeout, resolver.lifetime = 2.0, 4.0
+    return resolver
+
+
+async def run_guess(db: DB, *, dns_concurrency: int = 300, limit: int | None = None,
+                    dns_servers: list[str] | None = None) -> int:
     rows = db.businesses_for_guess(limit)
-    known = db.known_site_keys()
+    skip = db.known_site_keys() | db.dns_checked()
     candidates: dict[str, list[tuple[int, list[str]]]] = defaultdict(list)
     for r in rows:
         tokens = business_tokens(r["postal_code"], r["siren"])
         if not tokens:
             continue
         for d in set(candidate_domains(r["name"])) | set(candidate_domains(r["alt_name"] or "")):
-            if d not in known:
+            if d not in skip:
                 candidates[d].append((r["id"], tokens))
     if not candidates:
-        log("[guess] aucun domaine à tester.")
+        log("[guess] aucun nouveau domaine à tester.")
         return 0
     log(f"[guess] {len(rows)} entreprises sans site -> {len(candidates)} domaines à tester (DNS)")
 
     try:
-        resolver = dns.asyncresolver.Resolver()
+        resolver = make_resolver(dns_servers)
     except dns.exception.DNSException as exc:
         log(f"[guess] résolveur DNS indisponible : {exc!r}")
         return 0
-    resolver.timeout, resolver.lifetime = 3.0, 6.0
-    sem = asyncio.Semaphore(dns_concurrency)
+    queue: asyncio.Queue = asyncio.Queue()
+    for d in candidates:
+        queue.put_nowait(d)
     progress = Progress("guess DNS", total=len(candidates))
     alive: dict[str, list] = {}
+    checked: list[tuple[str, int]] = []
+    found = 0
 
-    async def check(domain: str) -> None:
-        async with sem:
-            if await _exists(resolver, domain):
+    def flush() -> None:
+        # sauvegarde régulière : un Ctrl+C ne fait perdre que les dernières secondes
+        db.add_guesses(alive)
+        db.save_dns(checked)
+        db.commit()
+        alive.clear()
+        checked.clear()
+
+    async def worker() -> None:
+        nonlocal found
+        while True:
+            try:
+                domain = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            status = await _exists(resolver, domain)
+            if status is not None:
+                checked.append((domain, int(status)))
+            if status:
                 alive[domain] = candidates[domain]
+                found += 1
                 progress.add("existants", 1)
-        progress.tick()
+            elif status is None:
+                progress.add("sans réponse", 1)
+            progress.tick()
+            if len(checked) >= 2000:
+                flush()
 
     ticker = asyncio.create_task(progress.run())
     try:
-        await asyncio.gather(*(check(d) for d in candidates))
+        await asyncio.gather(*(worker() for _ in range(dns_concurrency)))
     finally:
         ticker.cancel()
-    db.add_guesses(alive)
-    log(f"[guess] {len(alive)} domaines existants ajoutés au crawl (vérifiés pendant le crawl)")
-    return len(alive)
+        flush()
+    log(f"[guess] {found} domaines existants ajoutés au crawl (vérifiés pendant le crawl)")
+    return found

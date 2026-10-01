@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS emails (
 CREATE INDEX IF NOT EXISTS idx_emails_domain ON emails(domain);
 CREATE INDEX IF NOT EXISTS idx_emails_biz ON emails(business_id);
 
+CREATE TABLE IF NOT EXISTS dns_checked (
+    domain TEXT PRIMARY KEY,
+    ok INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS mx (
     domain TEXT PRIMARY KEY,
     ok INTEGER,
@@ -157,12 +162,17 @@ class DB:
         sql = (
             "SELECT id, name, alt_name, postal_code, siren FROM businesses b "
             "WHERE site_key IS NULL "
-            "AND NOT EXISTS (SELECT 1 FROM guesses g WHERE g.business_id=b.id) "
             "AND NOT EXISTS (SELECT 1 FROM emails e WHERE e.business_id=b.id)"
         )
         if limit:
             sql += f" LIMIT {int(limit)}"
         return self.conn.execute(sql).fetchall()
+
+    def dns_checked(self) -> set[str]:
+        return {r[0] for r in self.conn.execute("SELECT domain FROM dns_checked")}
+
+    def save_dns(self, results: list[tuple[str, int]]) -> None:
+        self.conn.executemany("INSERT OR REPLACE INTO dns_checked (domain, ok) VALUES (?, ?)", results)
 
     def known_site_keys(self) -> set[str]:
         return {r[0] for r in self.conn.execute("SELECT site_key FROM sites")}
