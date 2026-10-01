@@ -165,6 +165,7 @@ Si des modifications locales sont affichées, les conserver et les résoudre ava
 branche. Pour récupérer la version corrigée :
 
 ```bash
+git remote set-branches --add origin codex/establishment-contacts-open-data
 git fetch origin
 git switch codex/establishment-contacts-open-data
 git pull --ff-only
